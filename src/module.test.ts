@@ -28,7 +28,7 @@ import {
   stopMatterbridgeEnvironment,
 } from 'matterbridge/jestutils';
 import { BLUE, CYAN, ign, LogLevel, nf, rs, YELLOW } from 'matterbridge/logger';
-import { Identify, WindowCovering } from 'matterbridge/matter/clusters';
+import { Identify, OnOff, WindowCovering } from 'matterbridge/matter/clusters';
 import { wait } from 'matterbridge/utils';
 import { Client, Device } from 'overkiz-client';
 
@@ -68,6 +68,8 @@ describe('TestPlatform', () => {
     },
     blackList: [],
     whiteList: [],
+    exposeMyPositionSwitch: true,
+    myPositionSuffix: 'My',
     debug: false,
     unregisterOnShutdown: false,
   };
@@ -400,6 +402,130 @@ describe('TestPlatform', () => {
     expect(matterbridge.devices.size).toBe(0);
     await flushAsync();
   }, 120000);
+
+  it('should create a My-position trigger when device supports "my"', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'my'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.covers.size).toBe(1);
+    expect(somfyPlatform.myTriggers.size).toBe(1);
+    const trigger = somfyPlatform.myTriggers.get('Device1 My');
+    expect(trigger).toBeDefined();
+    expect(trigger?.command).toBe('my');
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.DEBUG, expect.stringContaining('added My-position trigger'));
+
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    somfyPlatform.myTriggers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  });
+
+  it('should create a My-position trigger when device supports "myPosition"', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'myPosition'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.myTriggers.size).toBe(1);
+    expect(somfyPlatform.myTriggers.get('Device1 My')?.command).toBe('myPosition');
+
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    somfyPlatform.myTriggers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  });
+
+  it('should not create a My-position trigger when device does not support "my"', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.covers.size).toBe(1);
+    expect(somfyPlatform.myTriggers.size).toBe(0);
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.DEBUG, expect.stringContaining('skipped My-position trigger'));
+
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  });
+
+  it('should send "my" on OnOff.on and auto-reset to off after ~1.5s', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'my'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const trigger = somfyPlatform.myTriggers.get('Device1 My');
+    expect(trigger).toBeDefined();
+    if (!trigger) return;
+    const triggerEndpoint = trigger.bridgedDevice;
+
+    jest.clearAllMocks();
+    await triggerEndpoint.executeCommandHandler('OnOff.on', {}, 'onOff', (triggerEndpoint.state as any).onOff, triggerEndpoint);
+    expect(clientExecuteSpy).toHaveBeenCalledWith('apply/highPriority', expect.anything());
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.INFO, `Sending command ${YELLOW}my${nf} highPriority true`);
+
+    await wait(2000);
+    expect(triggerEndpoint.getAttribute(OnOff.Cluster.id, 'onOff')).toBe(false);
+
+    jest.clearAllMocks();
+    await triggerEndpoint.executeCommandHandler('OnOff.off', {}, 'onOff', (triggerEndpoint.state as any).onOff, triggerEndpoint);
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.INFO, expect.stringContaining('off'));
+
+    jest.clearAllMocks();
+    await triggerEndpoint.executeCommandHandler('Identify.identify', { identifyTime: 1 }, 'identify', (triggerEndpoint.state as any).identify, triggerEndpoint);
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.INFO, expect.stringContaining('identify'));
+
+    // Trigger a fresh OnOff.on so resetTimeout is still pending, then onShutdown must clear it
+    await triggerEndpoint.executeCommandHandler('OnOff.on', {}, 'onOff', (triggerEndpoint.state as any).onOff, triggerEndpoint);
+    expect(somfyPlatform.myTriggers.get('Device1 My')?.resetTimeout).toBeDefined();
+    const savedClient = somfyPlatform.tahomaClient;
+    await somfyPlatform.onShutdown('Test cleanup');
+    expect(somfyPlatform.myTriggers.size).toBe(0);
+    somfyPlatform.tahomaClient = savedClient;
+
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    somfyPlatform.myTriggers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  }, 15000);
+
+  it('should not expose cover or My-trigger for blacklisted devices', async () => {
+    somfyPlatform.config.blackList = ['Device1'];
+    setMockDevice({ label: 'Device1', uniqueName: 'Blind', commands: ['open', 'close', 'stop', 'my'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.covers.size).toBe(0);
+    expect(somfyPlatform.myTriggers.size).toBe(0);
+    somfyPlatform.config.blackList = [];
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+  });
+
+  it('should not create My-trigger when exposeMyPositionSwitch is false', async () => {
+    somfyPlatform.config.exposeMyPositionSwitch = false;
+    setMockDevice({ label: 'Device1', uniqueName: 'Blind', commands: ['open', 'close', 'stop', 'my'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.covers.size).toBe(1);
+    expect(somfyPlatform.myTriggers.size).toBe(0);
+
+    somfyPlatform.config.exposeMyPositionSwitch = true;
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  });
 
   it('should discover devices with command "rollOut", "rollUp" and "stop"', async () => {
     await setDebug(false);
