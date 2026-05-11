@@ -28,6 +28,14 @@ If you like this project and find it useful, please consider giving it a star on
 
 # Changelog
 
+## [1.4.9] - 2026-05-11
+
+### Added
+
+- [my-position]: Expose a paired OnOff trigger device for every cover that supports the Somfy `my`/`myPosition` favorite command. Tapping the switch recalls the favorite position and auto-resets after ~1.5 s. Configurable via `exposeMyPositionSwitch` (default `true`) and `myPositionSuffix` (default `"My"`).
+
+<a href="https://www.buymeacoffee.com/luligugithub"><img src="https://matterbridge.io/assets/bmc-button.svg" alt="Buy me a coffee" width="80"></a>
+
 ## [1.4.8] - 2026-03-22
 
 ## Fixed

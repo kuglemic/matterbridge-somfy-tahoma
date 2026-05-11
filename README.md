@@ -133,3 +133,45 @@ Siri open the Living room blind
 Siri close the Living room blind
 Siri set the Living room blind to 70%
 ```
+
+## My position triggers
+
+Somfy motors with electronic limits store a user-defined "favorite" position called **My**.
+For every cover device that exposes a `my` (or `myPosition`) command, this plugin creates an
+additional Matter OnOff bridged device alongside the cover. Tapping it sends the favorite
+command to the motor and the switch resets itself to _off_ after ~1.5 s, so it acts as a
+momentary trigger.
+
+### When a device qualifies
+
+A trigger device is created when:
+
+- the cover passes the existing `whiteList` / `blackList` filter, **and**
+- the underlying TaHoma device declares either the `my` or `myPosition` command.
+
+If neither command is present, only the cover is exposed and a debug-level message is logged
+explaining the skip.
+
+### Configuration
+
+```json
+{
+  "exposeMyPositionSwitch": true,
+  "myPositionSuffix": "My"
+}
+```
+
+- `exposeMyPositionSwitch` (boolean, default `true`) — master switch for the feature.
+- `myPositionSuffix` (string, default `"My"`) — appended to the cover label to name the trigger
+  device. Pick a phrase that sounds natural in your locale and in voice commands, e.g.
+  `Lieblingsposition`, `Tag-Stellung`, `Favorite`.
+
+### Apple Home / Siri usage
+
+After Matterbridge has paired with Apple Home, each compatible cover shows up twice: once as
+the blind itself and once as the trigger switch. You can ask Siri:
+
+> "Hey Siri, schalte Wohnzimmer Jalousie My ein"
+
+and the motor will drive to its saved favorite position. The switch then turns off
+automatically — no automation cleanup needed.
