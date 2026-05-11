@@ -24,9 +24,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { bridgedNode, coverDevice, MatterbridgeDynamicPlatform, MatterbridgeEndpoint, PlatformConfig, PlatformMatterbridge, powerSource } from 'matterbridge';
+import { bridgedNode, coverDevice, MatterbridgeDynamicPlatform, MatterbridgeEndpoint, onOffSwitch, PlatformConfig, PlatformMatterbridge, powerSource } from 'matterbridge';
 import { AnsiLogger, BLUE, CYAN, debugStringify, ign, nf, rs, stringify, YELLOW } from 'matterbridge/logger';
-import { Identify, WindowCovering } from 'matterbridge/matter/clusters';
+import { Identify, OnOff, WindowCovering } from 'matterbridge/matter/clusters';
 import { inspectError, isValidNumber, isValidString } from 'matterbridge/utils';
 import { Action, Client, Command, Device, Execution, State } from 'overkiz-client';
 
@@ -36,6 +36,9 @@ export const Opening = WindowCovering.MovementStatus.Opening;
 export const Closing = WindowCovering.MovementStatus.Closing;
 export const WC_PERCENT100THS_MIN_OPEN = 0;
 export const WC_PERCENT100THS_MAX_CLOSED = 10000;
+const MY_TRIGGER_RESET_MS = 1500;
+const MY_TRIGGER_SERIAL_SUFFIX = '-my';
+const MY_POSITION_COMMANDS = ['my', 'myPosition'] as const;
 const WindowCoveringCluster = WindowCovering.Cluster.with(WindowCovering.Feature.Lift, WindowCovering.Feature.PositionAwareLift);
 
 interface Cover {
@@ -45,6 +48,13 @@ interface Cover {
   movementStatus: WindowCovering.MovementStatus;
   moveInterval?: NodeJS.Timeout;
   commandTimeout?: NodeJS.Timeout;
+}
+
+interface MyTrigger {
+  tahomaDevice: Device;
+  bridgedDevice: MatterbridgeEndpoint;
+  command: string;
+  resetTimeout?: NodeJS.Timeout;
 }
 
 export type SomfyTahomaPlatformConfig = PlatformConfig & {
@@ -75,6 +85,7 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
   tahomaDevices: Device[] = [];
   bridgedDevices: MatterbridgeEndpoint[] = [];
   covers = new Map<string, Cover>();
+  myTriggers = new Map<string, MyTrigger>();
 
   // TaHoma
   tahomaClient?: Client;
@@ -172,6 +183,11 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
       cover.commandTimeout = undefined;
     });
     this.covers.clear();
+    this.myTriggers.forEach((trigger) => {
+      clearTimeout(trigger.resetTimeout);
+      trigger.resetTimeout = undefined;
+    });
+    this.myTriggers.clear();
     if (this.config.unregisterOnShutdown === true) await this.unregisterAllDevices();
   }
 
@@ -277,6 +293,55 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
       await this.registerDevice(cover);
       this.bridgedDevices.push(cover);
       this.covers.set(device.label, { tahomaDevice: device, bridgedDevice: cover, movementStatus: Stopped, movementDuration: duration });
+
+      // Optional My-position trigger
+      const myCommand = this.getMyCommand(device);
+      if (this.config.exposeMyPositionSwitch !== false && myCommand) {
+        const configuredSuffix = this.config.myPositionSuffix;
+        const suffix = typeof configuredSuffix === 'string' && configuredSuffix.length > 0 ? configuredSuffix : 'My';
+        const triggerLabel = `${device.label} ${suffix}`;
+        const triggerSerial = `${device.serialNumber}${MY_TRIGGER_SERIAL_SUFFIX}`;
+
+        const trigger = new MatterbridgeEndpoint([onOffSwitch, bridgedNode], { id: triggerLabel }, this.config.debug as boolean);
+        trigger.createDefaultIdentifyClusterServer(1, Identify.IdentifyType.Actuator);
+        trigger.createDefaultOnOffClusterServer(false);
+        trigger.createDefaultBridgedDeviceBasicInformationClusterServer(triggerLabel, triggerSerial, 0xfff1, 'Somfy Tahoma', `${device.definition.uiClass} My`);
+        trigger.addRequiredClusterServers();
+        await this.registerDevice(trigger);
+        this.bridgedDevices.push(trigger);
+        this.myTriggers.set(triggerLabel, { tahomaDevice: device, bridgedDevice: trigger, command: myCommand });
+        this.log.debug(`- added My-position trigger ${BLUE}${triggerLabel}${rs} using command ${YELLOW}${myCommand}${rs}`);
+
+        trigger.addCommandHandler('Identify.identify', async ({ request: { identifyTime } }) => {
+          const t = this.myTriggers.get(triggerLabel);
+          if (!t) return;
+          t.bridgedDevice.log.info(`Command ${ign}identify${rs}${nf} called identifyTime:${identifyTime}`);
+          await this.sendCommand('identify', device, true);
+        });
+
+        trigger.addCommandHandler('OnOff.on', async () => {
+          const t = this.myTriggers.get(triggerLabel);
+          if (!t) return;
+          t.bridgedDevice.log.info(`Command ${ign}on${rs}${nf} called for ${CYAN}${t.tahomaDevice.label}${nf} - sending ${YELLOW}${t.command}${nf}`);
+          try {
+            await this.sendCommand(t.command, t.tahomaDevice, true);
+          } finally {
+            if (t.resetTimeout) clearTimeout(t.resetTimeout);
+            t.resetTimeout = setTimeout(async () => {
+              t.resetTimeout = undefined;
+              await t.bridgedDevice.setAttribute(OnOff.Cluster.id, 'onOff', false, t.bridgedDevice.log);
+            }, MY_TRIGGER_RESET_MS);
+          }
+        });
+
+        trigger.addCommandHandler('OnOff.off', async () => {
+          const t = this.myTriggers.get(triggerLabel);
+          if (!t) return;
+          t.bridgedDevice.log.info(`Command ${ign}off${rs}${nf} called for ${CYAN}${t.tahomaDevice.label}`);
+        });
+      } else if (this.config.exposeMyPositionSwitch !== false && !myCommand) {
+        this.log.debug(`- skipped My-position trigger for ${BLUE}${device.label}${rs}: no 'my' or 'myPosition' command`);
+      }
 
       cover.addCommandHandler('Identify.identify', async ({ request: { identifyTime } }) => {
         const cover = this.covers.get(device.label);
@@ -392,6 +457,13 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         );
       }
     }, 1000);
+  }
+
+  private getMyCommand(device: Device): string | undefined {
+    for (const candidate of MY_POSITION_COMMANDS) {
+      if (device.commands.includes(candidate)) return candidate;
+    }
+    return undefined;
   }
 
   async sendCommand(command: string, device: Device, highPriority = false) {
