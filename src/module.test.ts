@@ -70,6 +70,7 @@ describe('TestPlatform', () => {
     whiteList: [],
     exposeMyPositionSwitch: true,
     myPositionSuffix: 'My',
+    myPositionAlias: 'favorite1',
     debug: false,
     unregisterOnShutdown: false,
   };
@@ -439,13 +440,58 @@ describe('TestPlatform', () => {
     await flushAsync();
   });
 
+  it('should create a My-position trigger using goToAlias when device supports it', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'goToAlias'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.myTriggers.size).toBe(1);
+    const trigger = somfyPlatform.myTriggers.get('Device1 My');
+    expect(trigger?.command).toBe('goToAlias');
+    expect(trigger?.commandParam).toBe('favorite1');
+    if (!trigger) return;
+
+    jest.clearAllMocks();
+    const triggerEndpoint = trigger.bridgedDevice;
+    await triggerEndpoint.executeCommandHandler('OnOff.on', {}, 'onOff', (triggerEndpoint.state as any).onOff, triggerEndpoint);
+    expect(clientExecuteSpy).toHaveBeenCalledWith('apply/highPriority', expect.anything());
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.INFO, expect.stringContaining('goToAlias favorite1'));
+
+    await wait(2000);
+    expect(triggerEndpoint.getAttribute(OnOff.Cluster.id, 'onOff')).toBe(false);
+
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    somfyPlatform.myTriggers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  }, 15000);
+
+  it('should honor custom myPositionAlias for goToAlias devices', async () => {
+    somfyPlatform.config.myPositionAlias = 'favorite2';
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'goToAlias'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+    expect(somfyPlatform.myTriggers.get('Device1 My')?.commandParam).toBe('favorite2');
+
+    somfyPlatform.config.myPositionAlias = 'favorite1';
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    somfyPlatform.myTriggers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  });
+
   it('should not create a My-position trigger when device does not support "my"', async () => {
     setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop'] });
     clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
     await somfyPlatform.discoverDevices();
     expect(somfyPlatform.covers.size).toBe(1);
     expect(somfyPlatform.myTriggers.size).toBe(0);
-    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.DEBUG, expect.stringContaining('skipped My-position trigger'));
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.DEBUG, expect.stringContaining("no 'my', 'myPosition' or 'goToAlias' command"));
 
     somfyPlatform.tahomaDevices = [];
     somfyPlatform.bridgedDevices = [];

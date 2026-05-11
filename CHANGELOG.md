@@ -33,6 +33,7 @@ If you like this project and find it useful, please consider giving it a star on
 ### Added
 
 - [my-position]: Expose a paired OnOff trigger device for every cover that supports the Somfy `my`/`myPosition` favorite command. Tapping the switch recalls the favorite position and auto-resets after ~1.5 s. Configurable via `exposeMyPositionSwitch` (default `true`) and `myPositionSuffix` (default `"My"`).
+- [my-position]: Also support io-stack devices that expose `goToAlias` (typical for Somfy io roller shutters). The trigger sends `goToAlias` with parameter taken from the new `myPositionAlias` config (default `"favorite1"`).
 
 <a href="https://www.buymeacoffee.com/luligugithub"><img src="https://matterbridge.io/assets/bmc-button.svg" alt="Buy me a coffee" width="80"></a>
 

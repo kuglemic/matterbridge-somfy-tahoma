@@ -10,6 +10,7 @@
   "movementDuration": {},
   "exposeMyPositionSwitch": true,
   "myPositionSuffix": "My",
+  "myPositionAlias": "favorite1",
   "debug": false,
   "unregisterOnShutdown": false
 }

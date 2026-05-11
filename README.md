@@ -147,9 +147,11 @@ momentary trigger.
 A trigger device is created when:
 
 - the cover passes the existing `whiteList` / `blackList` filter, **and**
-- the underlying TaHoma device declares either the `my` or `myPosition` command.
+- the underlying TaHoma device declares one of the commands `my`, `myPosition`, or `goToAlias`
+  (the latter is typical for io-stack roller shutters that use named alias slots like
+  `favorite1`).
 
-If neither command is present, only the cover is exposed and a debug-level message is logged
+If none of these is present, only the cover is exposed and a debug-level message is logged
 explaining the skip.
 
 ### Configuration
@@ -157,7 +159,8 @@ explaining the skip.
 ```json
 {
   "exposeMyPositionSwitch": true,
-  "myPositionSuffix": "My"
+  "myPositionSuffix": "My",
+  "myPositionAlias": "favorite1"
 }
 ```
 
@@ -165,6 +168,9 @@ explaining the skip.
 - `myPositionSuffix` (string, default `"My"`) — appended to the cover label to name the trigger
   device. Pick a phrase that sounds natural in your locale and in voice commands, e.g.
   `Lieblingsposition`, `Tag-Stellung`, `Favorite`.
+- `myPositionAlias` (string, default `"favorite1"`) — only used for io-stack devices that
+  expose `goToAlias`. Identifies which alias slot holds your My-position; change to
+  `favorite2` (etc.) if your favorite is stored on a different slot in the TaHoma app.
 
 ### Apple Home / Siri usage
 

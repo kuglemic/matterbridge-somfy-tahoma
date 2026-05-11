@@ -39,6 +39,8 @@ export const WC_PERCENT100THS_MAX_CLOSED = 10000;
 const MY_TRIGGER_RESET_MS = 1500;
 const MY_TRIGGER_SERIAL_SUFFIX = '-my';
 const MY_POSITION_COMMANDS = ['my', 'myPosition'] as const;
+const GO_TO_ALIAS_COMMAND = 'goToAlias';
+const MY_POSITION_ALIAS_DEFAULT = 'favorite1';
 const WindowCoveringCluster = WindowCovering.Cluster.with(WindowCovering.Feature.Lift, WindowCovering.Feature.PositionAwareLift);
 
 interface Cover {
@@ -54,6 +56,7 @@ interface MyTrigger {
   tahomaDevice: Device;
   bridgedDevice: MatterbridgeEndpoint;
   command: string;
+  commandParam?: string;
   resetTimeout?: NodeJS.Timeout;
 }
 
@@ -66,6 +69,7 @@ export type SomfyTahomaPlatformConfig = PlatformConfig & {
   movementDuration: MovementDuration;
   exposeMyPositionSwitch?: boolean;
   myPositionSuffix?: string;
+  myPositionAlias?: string;
 };
 
 /**
@@ -309,8 +313,9 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         trigger.addRequiredClusterServers();
         await this.registerDevice(trigger);
         this.bridgedDevices.push(trigger);
-        this.myTriggers.set(triggerLabel, { tahomaDevice: device, bridgedDevice: trigger, command: myCommand });
-        this.log.debug(`- added My-position trigger ${BLUE}${triggerLabel}${rs} using command ${YELLOW}${myCommand}${rs}`);
+        this.myTriggers.set(triggerLabel, { tahomaDevice: device, bridgedDevice: trigger, command: myCommand.command, commandParam: myCommand.param });
+        const commandLogSuffix = myCommand.param ? ` ${myCommand.param}` : '';
+        this.log.debug(`- added My-position trigger ${BLUE}${triggerLabel}${rs} using command ${YELLOW}${myCommand.command}${commandLogSuffix}${rs}`);
 
         trigger.addCommandHandler('Identify.identify', async ({ request: { identifyTime } }) => {
           const t = this.myTriggers.get(triggerLabel);
@@ -322,9 +327,10 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         trigger.addCommandHandler('OnOff.on', async () => {
           const t = this.myTriggers.get(triggerLabel);
           if (!t) return;
-          t.bridgedDevice.log.info(`Command ${ign}on${rs}${nf} called for ${CYAN}${t.tahomaDevice.label}${nf} - sending ${YELLOW}${t.command}${nf}`);
+          const paramSuffix = t.commandParam ? ` ${t.commandParam}` : '';
+          t.bridgedDevice.log.info(`Command ${ign}on${rs}${nf} called for ${CYAN}${t.tahomaDevice.label}${nf} - sending ${YELLOW}${t.command}${paramSuffix}${nf}`);
           try {
-            await this.sendCommand(t.command, t.tahomaDevice, true);
+            await this.sendCommand(t.command, t.tahomaDevice, true, t.commandParam !== undefined ? [t.commandParam] : undefined);
           } finally {
             if (t.resetTimeout) clearTimeout(t.resetTimeout);
             t.resetTimeout = setTimeout(async () => {
@@ -340,7 +346,7 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
           t.bridgedDevice.log.info(`Command ${ign}off${rs}${nf} called for ${CYAN}${t.tahomaDevice.label}`);
         });
       } else if (this.config.exposeMyPositionSwitch !== false && !myCommand) {
-        this.log.debug(`- skipped My-position trigger for ${BLUE}${device.label}${rs}: no 'my' or 'myPosition' command`);
+        this.log.debug(`- skipped My-position trigger for ${BLUE}${device.label}${rs}: no 'my', 'myPosition' or 'goToAlias' command`);
       }
 
       cover.addCommandHandler('Identify.identify', async ({ request: { identifyTime } }) => {
@@ -459,23 +465,29 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
     }, 1000);
   }
 
-  private getMyCommand(device: Device): string | undefined {
+  private getMyCommand(device: Device): { command: string; param?: string } | undefined {
     for (const candidate of MY_POSITION_COMMANDS) {
-      if (device.commands.includes(candidate)) return candidate;
+      if (device.commands.includes(candidate)) return { command: candidate };
+    }
+    if (device.commands.includes(GO_TO_ALIAS_COMMAND)) {
+      const configuredAlias = this.config.myPositionAlias;
+      const alias = typeof configuredAlias === 'string' && configuredAlias.length > 0 ? configuredAlias : MY_POSITION_ALIAS_DEFAULT;
+      return { command: GO_TO_ALIAS_COMMAND, param: alias };
     }
     return undefined;
   }
 
-  async sendCommand(command: string, device: Device, highPriority = false) {
+  async sendCommand(command: string, device: Device, highPriority = false, parameters?: (string | number)[]) {
     if (command === 'open' && !device.commands.includes('open') && device.commands.includes('rollOut')) command = 'rollOut';
     if (command === 'close' && !device.commands.includes('close') && device.commands.includes('rollUp')) command = 'rollUp';
 
     if (command === 'open' && !device.commands.includes('open') && device.commands.includes('up')) command = 'up';
     if (command === 'close' && !device.commands.includes('close') && device.commands.includes('down')) command = 'down';
 
-    this.log.info(`Sending command ${YELLOW}${command}${nf} highPriority ${highPriority}`);
+    const paramSuffix = parameters && parameters.length > 0 ? ` ${parameters.join(',')}` : '';
+    this.log.info(`Sending command ${YELLOW}${command}${paramSuffix}${nf} highPriority ${highPriority}`);
     try {
-      const _command = new Command(command);
+      const _command = parameters && parameters.length > 0 ? new Command(command, parameters) : new Command(command);
       const _action = new Action(device.deviceURL, [_command]);
       const _execution = new Execution('Sending ' + command, _action);
       await this.tahomaClient?.execute(highPriority ? 'apply/highPriority' : 'apply', _execution);

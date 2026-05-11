@@ -94,6 +94,12 @@
       "type": "string",
       "default": "My"
     },
+    "myPositionAlias": {
+      "title": "My position alias (io-stack devices)",
+      "description": "For devices that expose 'goToAlias' instead of 'my' (typical for io-stack roller shutters), this alias is sent as parameter. Default 'favorite1' matches Somfy's standard My-position slot. Change to 'favorite2' etc. if your favorite is stored on a different slot.",
+      "type": "string",
+      "default": "favorite1"
+    },
     "debug": {
       "title": "Enable Debug",
 
