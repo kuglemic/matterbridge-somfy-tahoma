@@ -54,6 +54,8 @@ export type SomfyTahomaPlatformConfig = PlatformConfig & {
   whiteList: string[];
   blackList: string[];
   movementDuration: MovementDuration;
+  exposeMyPositionSwitch?: boolean;
+  myPositionSuffix?: string;
 };
 
 /**

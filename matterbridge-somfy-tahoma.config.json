@@ -8,6 +8,8 @@
   "blackList": [],
   "whiteList": [],
   "movementDuration": {},
+  "exposeMyPositionSwitch": true,
+  "myPositionSuffix": "My",
   "debug": false,
   "unregisterOnShutdown": false
 }

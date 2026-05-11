@@ -82,6 +82,18 @@
         "type": "integer"
       }
     },
+    "exposeMyPositionSwitch": {
+      "title": "Expose My position trigger",
+      "description": "If enabled, each cover device that supports the Somfy 'my' favorite position will get an additional OnOff trigger device. Turning the trigger on recalls the favorite position and then auto-resets.",
+      "type": "boolean",
+      "default": true
+    },
+    "myPositionSuffix": {
+      "title": "My position suffix",
+      "description": "Suffix appended to the cover label to name the My-position trigger device (e.g. 'My', 'Lieblingsposition'). Used by Siri / Google / Alexa as the spoken name.",
+      "type": "string",
+      "default": "My"
+    },
     "debug": {
       "title": "Enable Debug",
 
