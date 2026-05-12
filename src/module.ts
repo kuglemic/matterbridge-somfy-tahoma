@@ -41,7 +41,18 @@ const MY_TRIGGER_SERIAL_SUFFIX = '-my';
 const MY_POSITION_COMMANDS = ['my', 'myPosition'] as const;
 const GO_TO_ALIAS_COMMAND = 'goToAlias';
 const MY_POSITION_ALIAS_DEFAULT = 'favorite1';
-const WindowCoveringCluster = WindowCovering.Cluster.with(WindowCovering.Feature.Lift, WindowCovering.Feature.PositionAwareLift);
+const TILT_COMMANDS = ['setOrientation', 'setTilt'] as const;
+const SET_CLOSURE_COMMAND = 'setClosure';
+const WC_PERCENT100THS_INITIAL_TILT = 5000;
+const COMMAND_BUNDLE_WINDOW_MS = 500;
+const WindowCoveringCluster = WindowCovering.Cluster.with(
+  WindowCovering.Feature.Lift,
+  WindowCovering.Feature.PositionAwareLift,
+  WindowCovering.Feature.Tilt,
+  WindowCovering.Feature.PositionAwareTilt,
+);
+
+type TiltCommand = (typeof TILT_COMMANDS)[number];
 
 interface Cover {
   tahomaDevice: Device;
@@ -50,6 +61,11 @@ interface Cover {
   movementStatus: WindowCovering.MovementStatus;
   moveInterval?: NodeJS.Timeout;
   commandTimeout?: NodeJS.Timeout;
+  hasSetClosure: boolean;
+  tiltCommand?: TiltCommand;
+  currentTilt: number;
+  pendingLift?: number;
+  pendingTilt?: number;
 }
 
 interface MyTrigger {
@@ -70,6 +86,7 @@ export type SomfyTahomaPlatformConfig = PlatformConfig & {
   exposeMyPositionSwitch?: boolean;
   myPositionSuffix?: string;
   myPositionAlias?: string;
+  disableTilt?: string[];
 };
 
 /**
@@ -287,16 +304,36 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         this.log.debug(`***Tahoma update for ${device.label}: ${debugStringify(changedStates)}`);
       });
 
+      const disableTiltConfig = Array.isArray(this.config.disableTilt) ? (this.config.disableTilt as string[]) : [];
+      const tiltDisabled = disableTiltConfig.includes(device.label);
+      const hasSetClosure = device.commands.includes(SET_CLOSURE_COMMAND);
+      const tiltCommand = tiltDisabled ? undefined : (TILT_COMMANDS.find((c) => device.commands.includes(c)) as TiltCommand | undefined);
+      if (tiltCommand) this.log.debug(`- detected tilt support via ${YELLOW}${tiltCommand}${rs}`);
+      else if (tiltDisabled) this.log.debug(`- tilt support disabled via config.disableTilt for ${BLUE}${device.label}${rs}`);
+      if (hasSetClosure) this.log.debug(`- detected ${YELLOW}setClosure${rs} (direct percentage positioning)`);
+
       const cover = new MatterbridgeEndpoint([coverDevice, bridgedNode, powerSource], { id: device.label }, this.config.debug as boolean);
       cover.createDefaultIdentifyClusterServer(1, Identify.IdentifyType.Actuator);
-      cover.createDefaultWindowCoveringClusterServer();
+      if (tiltCommand) {
+        cover.createDefaultLiftTiltWindowCoveringClusterServer(WC_PERCENT100THS_INITIAL_TILT, WC_PERCENT100THS_INITIAL_TILT);
+      } else {
+        cover.createDefaultWindowCoveringClusterServer();
+      }
       cover.createDefaultBridgedDeviceBasicInformationClusterServer(device.label, device.serialNumber, 0xfff1, 'Somfy Tahoma', device.definition.uiClass);
       if (device.states.find((s) => s.name === 'core:BatteryDiscreteLevelState')) cover.createDefaultPowerSourceRechargeableBatteryClusterServer();
       else cover.createDefaultPowerSourceWiredClusterServer();
       cover.addRequiredClusterServers();
       await this.registerDevice(cover);
       this.bridgedDevices.push(cover);
-      this.covers.set(device.label, { tahomaDevice: device, bridgedDevice: cover, movementStatus: Stopped, movementDuration: duration });
+      this.covers.set(device.label, {
+        tahomaDevice: device,
+        bridgedDevice: cover,
+        movementStatus: Stopped,
+        movementDuration: duration,
+        hasSetClosure,
+        tiltCommand,
+        currentTilt: WC_PERCENT100THS_INITIAL_TILT,
+      });
 
       // Optional My-position trigger
       const myCommand = this.getMyCommand(device);
@@ -357,36 +394,37 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
       });
 
       cover.addCommandHandler('WindowCovering.upOrOpen', async () => {
-        const cover = this.covers.get(device.label);
-        if (!cover) return;
-        if (cover.commandTimeout) clearTimeout(cover.commandTimeout);
-        cover.commandTimeout = setTimeout(async () => {
-          cover.commandTimeout = undefined;
-          cover.bridgedDevice.log.info(`Command ${ign}upOrOpen${rs}${nf} called for ${CYAN}${cover.tahomaDevice.label}`);
-          await this.moveToPosition(cover, WC_PERCENT100THS_MIN_OPEN);
-        }, 500);
+        const c = this.covers.get(device.label);
+        if (!c) return;
+        c.pendingLift = WC_PERCENT100THS_MIN_OPEN;
+        if (c.tiltCommand) c.pendingTilt = WC_PERCENT100THS_MIN_OPEN;
+        c.bridgedDevice.log.info(`Command ${ign}upOrOpen${rs}${nf} called for ${CYAN}${c.tahomaDevice.label}`);
+        this.scheduleFlush(c);
       });
 
       cover.addCommandHandler('WindowCovering.downOrClose', async () => {
-        const cover = this.covers.get(device.label);
-        if (!cover) return;
-        if (cover.commandTimeout) clearTimeout(cover.commandTimeout);
-        cover.commandTimeout = setTimeout(async () => {
-          cover.commandTimeout = undefined;
-          cover.bridgedDevice.log.info(`Command ${ign}downOrClose${rs}${nf} called for ${CYAN}${cover.tahomaDevice.label}`);
-          await this.moveToPosition(cover, WC_PERCENT100THS_MAX_CLOSED);
-        }, 500);
+        const c = this.covers.get(device.label);
+        if (!c) return;
+        c.pendingLift = WC_PERCENT100THS_MAX_CLOSED;
+        if (c.tiltCommand) c.pendingTilt = WC_PERCENT100THS_MAX_CLOSED;
+        c.bridgedDevice.log.info(`Command ${ign}downOrClose${rs}${nf} called for ${CYAN}${c.tahomaDevice.label}`);
+        this.scheduleFlush(c);
       });
 
       cover.addCommandHandler('WindowCovering.goToLiftPercentage', async ({ request: { liftPercent100thsValue } }) => {
-        const cover = this.covers.get(device.label);
-        if (!cover) return;
-        if (cover.commandTimeout) clearTimeout(cover.commandTimeout);
-        cover.commandTimeout = setTimeout(async () => {
-          cover.commandTimeout = undefined;
-          cover.bridgedDevice.log.info(`Command ${ign}goToLiftPercentage${rs}${nf} ${CYAN}${liftPercent100thsValue}${nf} called for ${CYAN}${cover.tahomaDevice.label}`);
-          await this.moveToPosition(cover, liftPercent100thsValue);
-        }, 500);
+        const c = this.covers.get(device.label);
+        if (!c) return;
+        c.pendingLift = liftPercent100thsValue;
+        c.bridgedDevice.log.info(`Command ${ign}goToLiftPercentage${rs}${nf} ${CYAN}${liftPercent100thsValue}${nf} called for ${CYAN}${c.tahomaDevice.label}`);
+        this.scheduleFlush(c);
+      });
+
+      cover.addCommandHandler('WindowCovering.goToTiltPercentage', async ({ request: { tiltPercent100thsValue } }) => {
+        const c = this.covers.get(device.label);
+        if (!c || !c.tiltCommand) return;
+        c.pendingTilt = tiltPercent100thsValue;
+        c.bridgedDevice.log.info(`Command ${ign}goToTiltPercentage${rs}${nf} ${CYAN}${tiltPercent100thsValue}${nf} called for ${CYAN}${c.tahomaDevice.label}`);
+        this.scheduleFlush(c);
       });
 
       cover.addCommandHandler('WindowCovering.stopMotion', async ({ attributes }) => {
@@ -406,6 +444,54 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         cover.movementStatus = Stopped;
       });
     }
+  }
+
+  scheduleFlush(cover: Cover) {
+    if (cover.commandTimeout) clearTimeout(cover.commandTimeout);
+    cover.commandTimeout = setTimeout(async () => {
+      cover.commandTimeout = undefined;
+      await this.flushPendingMove(cover);
+    }, COMMAND_BUNDLE_WINDOW_MS);
+  }
+
+  async flushPendingMove(cover: Cover) {
+    const log = cover.bridgedDevice.log;
+    const pendingLift = cover.pendingLift;
+    const pendingTilt = cover.pendingTilt;
+    cover.pendingLift = undefined;
+    cover.pendingTilt = undefined;
+
+    const liftQueued = pendingLift !== undefined;
+    const tiltQueued = pendingTilt !== undefined && !!cover.tiltCommand;
+    const useSetClosurePath = cover.hasSetClosure && liftQueued;
+
+    // Legacy simulation path: lift-only, no setClosure, no tilt queued.
+    if (!useSetClosurePath && !tiltQueued && liftQueued) {
+      await this.moveToPosition(cover, pendingLift as number);
+      return;
+    }
+
+    const commands: Command[] = [];
+    if (useSetClosurePath) commands.push(new Command(SET_CLOSURE_COMMAND, [Math.round((pendingLift as number) / 100)]));
+    if (tiltQueued) commands.push(new Command(cover.tiltCommand as string, [Math.round((pendingTilt as number) / 100)]));
+
+    if (commands.length === 0) return;
+
+    if (cover.movementStatus !== Stopped) {
+      log.debug('Cancelling simulated movement before dispatching bundled command');
+      clearInterval(cover.moveInterval);
+      cover.moveInterval = undefined;
+    }
+
+    const liftSnapTarget = useSetClosurePath
+      ? (pendingLift as number)
+      : (cover.bridgedDevice.getAttribute(WindowCoveringCluster, 'currentPositionLiftPercent100ths', log) as number);
+    await cover.bridgedDevice.setWindowCoveringTargetAndCurrentPosition(liftSnapTarget, tiltQueued ? (pendingTilt as number) : undefined);
+    if (tiltQueued) cover.currentTilt = pendingTilt as number;
+    await cover.bridgedDevice.setWindowCoveringStatus(WindowCovering.MovementStatus.Stopped);
+    cover.movementStatus = Stopped;
+
+    await this.sendCommand(commands, cover.tahomaDevice, true);
   }
 
   // With Matter 0=open 10000=close
@@ -477,22 +563,30 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
     return undefined;
   }
 
-  async sendCommand(command: string, device: Device, highPriority = false, parameters?: (string | number)[]) {
-    if (command === 'open' && !device.commands.includes('open') && device.commands.includes('rollOut')) command = 'rollOut';
-    if (command === 'close' && !device.commands.includes('close') && device.commands.includes('rollUp')) command = 'rollUp';
+  async sendCommand(command: string | Command[], device: Device, highPriority = false, parameters?: (string | number)[]) {
+    let _commands: Command[];
+    let logLabel: string;
 
-    if (command === 'open' && !device.commands.includes('open') && device.commands.includes('up')) command = 'up';
-    if (command === 'close' && !device.commands.includes('close') && device.commands.includes('down')) command = 'down';
+    if (Array.isArray(command)) {
+      _commands = command;
+      logLabel = command.map((c) => (c.parameters.length > 0 ? `${c.name} ${c.parameters.join(',')}` : c.name)).join(' + ');
+    } else {
+      if (command === 'open' && !device.commands.includes('open') && device.commands.includes('rollOut')) command = 'rollOut';
+      if (command === 'close' && !device.commands.includes('close') && device.commands.includes('rollUp')) command = 'rollUp';
+      if (command === 'open' && !device.commands.includes('open') && device.commands.includes('up')) command = 'up';
+      if (command === 'close' && !device.commands.includes('close') && device.commands.includes('down')) command = 'down';
+      const paramSuffix = parameters && parameters.length > 0 ? ` ${parameters.join(',')}` : '';
+      logLabel = `${command}${paramSuffix}`;
+      _commands = [parameters && parameters.length > 0 ? new Command(command, parameters) : new Command(command)];
+    }
 
-    const paramSuffix = parameters && parameters.length > 0 ? ` ${parameters.join(',')}` : '';
-    this.log.info(`Sending command ${YELLOW}${command}${paramSuffix}${nf} highPriority ${highPriority}`);
+    this.log.info(`Sending command ${YELLOW}${logLabel}${nf} highPriority ${highPriority}`);
     try {
-      const _command = parameters && parameters.length > 0 ? new Command(command, parameters) : new Command(command);
-      const _action = new Action(device.deviceURL, [_command]);
-      const _execution = new Execution('Sending ' + command, _action);
+      const _action = new Action(device.deviceURL, _commands);
+      const _execution = new Execution('Sending ' + logLabel, _action);
       await this.tahomaClient?.execute(highPriority ? 'apply/highPriority' : 'apply', _execution);
     } catch (error) {
-      inspectError(this.log, `Error sending command ${command} to ${device.label}`, error);
+      inspectError(this.log, `Error sending command ${logLabel} to ${device.label}`, error);
     }
   }
 }

@@ -573,6 +573,256 @@ describe('TestPlatform', () => {
     await flushAsync();
   });
 
+  const commandsFromLastExecute = () => {
+    const calls = clientExecuteSpy.mock.calls;
+    const last = calls[calls.length - 1];
+    const execution: any = last?.[1];
+    return execution?.actions?.[0]?.commands ?? [];
+  };
+
+  const resetPlatform = async () => {
+    somfyPlatform.tahomaDevices = [];
+    somfyPlatform.bridgedDevices = [];
+    somfyPlatform.covers.clear();
+    somfyPlatform.myTriggers.clear();
+    await somfyPlatform.unregisterAllDevices();
+    matterbridge.devices.clear();
+    await flushAsync();
+  };
+
+  it('should detect setOrientation as tilt-capable and expose tilt attributes', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    expect(cover).toBeDefined();
+    expect(cover?.tiltCommand).toBe('setOrientation');
+    expect(cover?.hasSetClosure).toBe(true);
+    expect(cover?.currentTilt).toBe(5000);
+    expect(cover?.bridgedDevice.hasAttributeServer(WindowCovering.Cluster.id, 'currentPositionTiltPercent100ths')).toBe(true);
+
+    await resetPlatform();
+  });
+
+  it('should detect setTilt when setOrientation is absent', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setTilt'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    expect(cover?.tiltCommand).toBe('setTilt');
+    expect(cover?.bridgedDevice.hasAttributeServer(WindowCovering.Cluster.id, 'currentPositionTiltPercent100ths')).toBe(true);
+
+    await resetPlatform();
+  });
+
+  it('should leave non-tilt covers lift-only (no tilt attributes)', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    expect(cover?.tiltCommand).toBeUndefined();
+    expect(cover?.hasSetClosure).toBe(false);
+    expect(cover?.bridgedDevice.hasAttributeServer(WindowCovering.Cluster.id, 'currentPositionTiltPercent100ths')).toBe(false);
+
+    await resetPlatform();
+  });
+
+  it('should send setClosure(int) for goToLiftPercentage on setClosure-capable cover', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    expect(cover).toBeDefined();
+    if (!cover) return;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 5000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+
+    const commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(1);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([50]);
+    expect(clientExecuteSpy).toHaveBeenCalledWith('apply/highPriority', expect.anything());
+    expect(device.getAttribute(WindowCovering.Cluster.id, 'currentPositionLiftPercent100ths')).toBe(5000);
+
+    await resetPlatform();
+  });
+
+  it('should send setOrientation(int) for goToTiltPercentage', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToTiltPercentage', { tiltPercent100thsValue: 7500 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+
+    const commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(1);
+    expect(commands[0].name).toBe('setOrientation');
+    expect(commands[0].parameters).toEqual([75]);
+    expect(cover.currentTilt).toBe(7500);
+    expect(device.getAttribute(WindowCovering.Cluster.id, 'currentPositionTiltPercent100ths')).toBe(7500);
+
+    await resetPlatform();
+  });
+
+  it('should be a no-op when flushPendingMove runs with no pending changes', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+
+    jest.clearAllMocks();
+    await somfyPlatform.flushPendingMove(cover);
+    expect(clientExecuteSpy).not.toHaveBeenCalled();
+
+    // pendingTilt without a tiltCommand should also produce no dispatch (defensive guard).
+    cover.pendingTilt = 5000;
+    cover.tiltCommand = undefined;
+    await somfyPlatform.flushPendingMove(cover);
+    expect(clientExecuteSpy).not.toHaveBeenCalled();
+
+    await resetPlatform();
+  });
+
+  it('should bundle lift+tilt arriving within the 500 ms window into one Action', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 3000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(50);
+    await device.executeCommandHandler('WindowCovering.goToTiltPercentage', { tiltPercent100thsValue: 8000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+
+    expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
+    const commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(2);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([30]);
+    expect(commands[1].name).toBe('setOrientation');
+    expect(commands[1].parameters).toEqual([80]);
+    expect(device.getAttribute(WindowCovering.Cluster.id, 'currentPositionLiftPercent100ths')).toBe(3000);
+    expect(device.getAttribute(WindowCovering.Cluster.id, 'currentPositionTiltPercent100ths')).toBe(8000);
+
+    await resetPlatform();
+  });
+
+  it('should NOT bundle lift then tilt arriving outside the 500 ms window', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 2000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
+    expect(commandsFromLastExecute()).toHaveLength(1);
+
+    await device.executeCommandHandler('WindowCovering.goToTiltPercentage', { tiltPercent100thsValue: 6000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    expect(clientExecuteSpy).toHaveBeenCalledTimes(2);
+    const secondCallCommands = commandsFromLastExecute();
+    expect(secondCallCommands).toHaveLength(1);
+    expect(secondCallCommands[0].name).toBe('setOrientation');
+
+    await resetPlatform();
+  });
+
+  it('should drive both axes for upOrOpen and downOrClose on tilt-capable covers', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.downOrClose', {}, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    let commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(2);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([100]);
+    expect(commands[1].name).toBe('setOrientation');
+    expect(commands[1].parameters).toEqual([100]);
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.upOrOpen', {}, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(2);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([0]);
+    expect(commands[1].name).toBe('setOrientation');
+    expect(commands[1].parameters).toEqual([0]);
+
+    await resetPlatform();
+  });
+
+  it('should cancel an in-flight simulated movement when a bundled command flushes', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+
+    cover.movementStatus = WindowCovering.MovementStatus.Opening;
+    cover.moveInterval = setInterval(() => {
+      /* noop */
+    }, 1000);
+
+    cover.pendingLift = 4000;
+    cover.pendingTilt = 6000;
+
+    jest.clearAllMocks();
+    await somfyPlatform.flushPendingMove(cover);
+    expect(cover.moveInterval).toBeUndefined();
+    expect(cover.movementStatus).toBe(WindowCovering.MovementStatus.Stopped);
+    expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
+
+    await resetPlatform();
+  });
+
+  it('should honor disableTilt override and expose lift-only cluster', async () => {
+    somfyPlatform.config.disableTilt = ['Device1'];
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    expect(cover?.tiltCommand).toBeUndefined();
+    expect(cover?.hasSetClosure).toBe(true);
+    expect(cover?.bridgedDevice.hasAttributeServer(WindowCovering.Cluster.id, 'currentPositionTiltPercent100ths')).toBe(false);
+
+    somfyPlatform.config.disableTilt = [];
+    await resetPlatform();
+  });
+
   it('should discover devices with command "rollOut", "rollUp" and "stop"', async () => {
     await setDebug(false);
     setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['rollOut', 'rollUp', 'stop'] });

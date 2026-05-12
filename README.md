@@ -181,3 +181,73 @@ the blind itself and once as the trigger switch. You can ask Siri:
 
 and the motor will drive to its saved favorite position. The switch then turns off
 automatically — no automation cleanup needed.
+
+## Tilt control for venetian blinds
+
+Somfy venetian blinds and exterior venetian blinds have two independent motions:
+the **lift** (raising and lowering the whole blind) and the **tilt** (rotating
+the lamellas). On supported devices this plugin exposes both as separate
+controls so Apple Home, Google Home, and Alexa each render two sliders per
+blind — "Position" and "Tilt".
+
+### Which devices qualify
+
+Tilt support is detected automatically. A cover gets the Matter `Tilt` feature
+when its underlying TaHoma device advertises either of the Overkiz commands:
+
+- `setOrientation` (preferred — typical for `ogp:VenetianBlind`, `ExteriorVenetianBlind`)
+- `setTilt` (used by some IO-stack devices, e.g. `TiltOnlyVenetianBlindRTSComponent`)
+
+Devices without either command keep the lift-only behaviour and look identical
+to before.
+
+If a cover also advertises `setClosure`, the plugin uses it to drive the lift
+to an exact percentage in one shot instead of estimating motion time locally.
+
+### How it appears in Apple Home
+
+A tilt-capable venetian blind shows two sliders in the Home app:
+
+- **Position** (0 % = open / blind raised, 100 % = closed / blind lowered)
+- **Tilt** (0 % = lamellas open / horizontal, 100 % = lamellas closed / vertical)
+
+Siri voice commands still work the way you expect:
+
+> "Hey Siri, set the kitchen blind to 30 %"
+
+operates the position only. For tilt, the easiest path is to add the blind to a
+**scene** in the Home app and adjust both sliders there.
+
+### Combining position and tilt in scenes
+
+When you build an Apple Home scene that sets both the position and the tilt of
+the same blind, Apple sends both updates almost simultaneously. To avoid the
+well-known race where the second Overkiz command interrupts the first, this
+plugin bundles them into a **single** Overkiz action with the commands in this
+order:
+
+1. `setClosure(int)` — move the blind to the requested position
+2. `setOrientation(int)` (or `setTilt`) — rotate the lamellas
+
+The Tahoma box then executes them sequentially without re-arbitration, so the
+blind moves to position first and only then rotates the slats to the target
+tilt — a single fluid motion.
+
+Internally, lift and tilt commands arriving within a short window
+(~500 ms) are coalesced into one action. Single-axis updates are dispatched
+on their own with no extra latency for everyday slider drags.
+
+### Configuration
+
+```json
+{
+  "disableTilt": []
+}
+```
+
+- `disableTilt` (array of device names, default `[]`) — listed devices are
+  exposed as lift-only even if their command list advertises `setOrientation`
+  or `setTilt`. Useful when auto-detection misfires for a specific motor.
+
+No new credentials, services, or keys are required — tilt is purely a
+capability detection refinement.

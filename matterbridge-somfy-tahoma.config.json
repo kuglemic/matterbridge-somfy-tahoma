@@ -11,6 +11,7 @@
   "exposeMyPositionSwitch": true,
   "myPositionSuffix": "My",
   "myPositionAlias": "favorite1",
+  "disableTilt": [],
   "debug": false,
   "unregisterOnShutdown": false
 }

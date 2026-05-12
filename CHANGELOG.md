@@ -28,6 +28,18 @@ If you like this project and find it useful, please consider giving it a star on
 
 # Changelog
 
+## [1.5.0] - 2026-05-12
+
+### Added
+
+- [tilt]: Expose Matter `Tilt` (TL) and `PositionAwareTilt` features for cover devices whose Overkiz command list includes `setOrientation` or `setTilt`. Apple Home, Google Home, and Alexa now render two independent sliders per supported venetian blind: position and lamella tilt.
+- [tilt]: When a cover supports `setClosure`, lift moves are sent as `setClosure(int 0..100)` directly to the motor instead of being simulated locally. Tahoma is authoritative; Matter snaps to the requested value.
+- [tilt]: Lift and tilt commands arriving within a 500 ms window are bundled into one Overkiz `Action` with the commands in the order `[setClosure, setOrientation]`, eliminating the documented race where the second command interrupts the first when Apple Home activates a multi-attribute scene.
+- [tilt]: New optional config `disableTilt: string[]` (default `[]`). Listed device names are exposed as lift-only even when the Overkiz commands advertise tilt support — escape hatch for misdetection.
+- [tilt]: `upOrOpen` and `downOrClose` drive both lift and tilt to the matching extreme on tilt-capable covers so Siri "open the blind" / "close the blind" behave intuitively. Lift-only covers continue to ignore tilt.
+
+<a href="https://www.buymeacoffee.com/luligugithub"><img src="https://matterbridge.io/assets/bmc-button.svg" alt="Buy me a coffee" width="80"></a>
+
 ## [1.4.9] - 2026-05-11
 
 ### Added

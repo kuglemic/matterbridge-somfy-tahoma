@@ -100,6 +100,17 @@
       "type": "string",
       "default": "favorite1"
     },
+    "disableTilt": {
+      "title": "Disable tilt for these devices",
+      "description": "Device names listed here will be exposed as lift-only even if the underlying TaHoma device declares a setOrientation or setTilt command. Useful when auto-detection misfires.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "selectFrom": "name",
+      "default": []
+    },
     "debug": {
       "title": "Enable Debug",
 
