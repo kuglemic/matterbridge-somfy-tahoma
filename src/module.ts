@@ -53,6 +53,8 @@ const WindowCoveringCluster = WindowCovering.Cluster.with(
 );
 
 type TiltCommand = (typeof TILT_COMMANDS)[number];
+export type LiftCalibration = [number, number];
+export type LiftCalibrationMap = Record<string, LiftCalibration>;
 
 interface Cover {
   tahomaDevice: Device;
@@ -66,6 +68,7 @@ interface Cover {
   currentTilt: number;
   pendingLift?: number;
   pendingTilt?: number;
+  liftCalibration?: LiftCalibration;
 }
 
 interface MyTrigger {
@@ -87,6 +90,7 @@ export type SomfyTahomaPlatformConfig = PlatformConfig & {
   myPositionSuffix?: string;
   myPositionAlias?: string;
   disableTilt?: string[];
+  liftCalibration?: LiftCalibrationMap;
 };
 
 /**
@@ -308,9 +312,11 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
       const tiltDisabled = disableTiltConfig.includes(device.label);
       const hasSetClosure = device.commands.includes(SET_CLOSURE_COMMAND);
       const tiltCommand = tiltDisabled ? undefined : (TILT_COMMANDS.find((c) => device.commands.includes(c)) as TiltCommand | undefined);
+      const liftCalibration = this.resolveLiftCalibration(device);
       if (tiltCommand) this.log.debug(`- detected tilt support via ${YELLOW}${tiltCommand}${rs}`);
       else if (tiltDisabled) this.log.debug(`- tilt support disabled via config.disableTilt for ${BLUE}${device.label}${rs}`);
       if (hasSetClosure) this.log.debug(`- detected ${YELLOW}setClosure${rs} (direct percentage positioning)`);
+      if (liftCalibration) this.log.debug(`- using lift calibration [${liftCalibration[0]}, ${liftCalibration[1]}] (Overkiz integer)`);
 
       const cover = new MatterbridgeEndpoint([coverDevice, bridgedNode, powerSource], { id: device.label }, this.config.debug as boolean);
       cover.createDefaultIdentifyClusterServer(1, Identify.IdentifyType.Actuator);
@@ -333,6 +339,7 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         hasSetClosure,
         tiltCommand,
         currentTilt: WC_PERCENT100THS_INITIAL_TILT,
+        liftCalibration,
       });
 
       // Optional My-position trigger
@@ -446,6 +453,12 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
     }
   }
 
+  private toCalibratedClosure(matterPercent100ths: number, calibration?: LiftCalibration): number {
+    if (!calibration) return Math.round(matterPercent100ths / 100);
+    const [top, bottom] = calibration;
+    return Math.round(top + (matterPercent100ths / 10000) * (bottom - top));
+  }
+
   scheduleFlush(cover: Cover) {
     if (cover.commandTimeout) clearTimeout(cover.commandTimeout);
     cover.commandTimeout = setTimeout(async () => {
@@ -471,9 +484,12 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
       return;
     }
 
+    const autoRestoreTilt = useSetClosurePath && !tiltQueued && !!cover.tiltCommand;
+
     const commands: Command[] = [];
-    if (useSetClosurePath) commands.push(new Command(SET_CLOSURE_COMMAND, [Math.round((pendingLift as number) / 100)]));
+    if (useSetClosurePath) commands.push(new Command(SET_CLOSURE_COMMAND, [this.toCalibratedClosure(pendingLift as number, cover.liftCalibration)]));
     if (tiltQueued) commands.push(new Command(cover.tiltCommand as string, [Math.round((pendingTilt as number) / 100)]));
+    else if (autoRestoreTilt) commands.push(new Command(cover.tiltCommand as string, [Math.round(cover.currentTilt / 100)]));
 
     if (commands.length === 0) return;
 
@@ -549,6 +565,23 @@ export class SomfyTahomaPlatform extends MatterbridgeDynamicPlatform {
         );
       }
     }, 1000);
+  }
+
+  private resolveLiftCalibration(device: Device): LiftCalibration | undefined {
+    const map = this.config.liftCalibration as LiftCalibrationMap | undefined;
+    if (!map) return undefined;
+    const entry = map[device.label];
+    if (entry === undefined) return undefined;
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      this.log.error(`Invalid liftCalibration for ${device.label}: expected [top, bottom] integer pair. Falling back to identity mapping.`);
+      return undefined;
+    }
+    const [top, bottom] = entry;
+    if (!Number.isInteger(top) || !Number.isInteger(bottom) || top < 0 || bottom > 100 || top >= bottom) {
+      this.log.error(`Invalid liftCalibration for ${device.label}: [${top}, ${bottom}] — must be two integers with 0 <= top < bottom <= 100. Falling back to identity mapping.`);
+      return undefined;
+    }
+    return [top, bottom];
   }
 
   private getMyCommand(device: Device): { command: string; param?: string } | undefined {

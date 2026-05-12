@@ -82,6 +82,19 @@
         "type": "integer"
       }
     },
+    "liftCalibration": {
+      "title": "Lift Calibration",
+      "description": "Per-device mechanical end-stop calibration. Matter 0% maps to 'top', Matter 100% maps to 'bottom' on the Overkiz scale (0..100). Use this when a blind does not reach its physical fully-open or fully-closed position at the default 0/100 values. Enter the device name and a pair of integers [top, bottom] with top < bottom. Example: \"Küche\": [23, 85].",
+      "type": "object",
+      "uniqueItems": true,
+      "selectFrom": "name",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
     "exposeMyPositionSwitch": {
       "title": "Expose My position trigger",
       "description": "If enabled, each cover device that supports the Somfy 'my' favorite position will get an additional OnOff trigger device. Turning the trigger on recalls the favorite position and then auto-resets.",

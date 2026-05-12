@@ -32,7 +32,7 @@ import { Identify, OnOff, WindowCovering } from 'matterbridge/matter/clusters';
 import { wait } from 'matterbridge/utils';
 import { Client, Device } from 'overkiz-client';
 
-import initializePlugin, { SomfyTahomaPlatform, SomfyTahomaPlatformConfig, WC_PERCENT100THS_MAX_CLOSED, WC_PERCENT100THS_MIN_OPEN } from './module.js';
+import initializePlugin, { LiftCalibration, SomfyTahomaPlatform, SomfyTahomaPlatformConfig, WC_PERCENT100THS_MAX_CLOSED, WC_PERCENT100THS_MIN_OPEN } from './module.js';
 
 // Spy on the Client.connect method
 const clientConnectSpy = jest.spyOn(Client.prototype, 'connect').mockImplementation((user: string, password: string) => {
@@ -630,7 +630,7 @@ describe('TestPlatform', () => {
     await resetPlatform();
   });
 
-  it('should send setClosure(int) for goToLiftPercentage on setClosure-capable cover', async () => {
+  it('should send setClosure(int) with trailing tilt-restore for goToLiftPercentage on tilt-capable cover', async () => {
     setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
     clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
     await somfyPlatform.discoverDevices();
@@ -645,9 +645,11 @@ describe('TestPlatform', () => {
     await wait(700);
 
     const commands = commandsFromLastExecute();
-    expect(commands).toHaveLength(1);
+    expect(commands).toHaveLength(2);
     expect(commands[0].name).toBe('setClosure');
     expect(commands[0].parameters).toEqual([50]);
+    expect(commands[1].name).toBe('setOrientation');
+    expect(commands[1].parameters).toEqual([50]);
     expect(clientExecuteSpy).toHaveBeenCalledWith('apply/highPriority', expect.anything());
     expect(device.getAttribute(WindowCovering.Cluster.id, 'currentPositionLiftPercent100ths')).toBe(5000);
 
@@ -736,11 +738,18 @@ describe('TestPlatform', () => {
     const device = cover.bridgedDevice;
 
     jest.clearAllMocks();
+    // First call: lift-only goToLiftPercentage on a tilt-capable cover.
+    // Bundles into ONE Action containing [setClosure, setOrientation(currentTilt)] — auto-tilt-restore.
     await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 2000 }, 'windowCovering', (device.state as any).windowCovering, device);
     await wait(700);
     expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
-    expect(commandsFromLastExecute()).toHaveLength(1);
+    const firstCallCommands = commandsFromLastExecute();
+    expect(firstCallCommands).toHaveLength(2);
+    expect(firstCallCommands[0].name).toBe('setClosure');
+    expect(firstCallCommands[1].name).toBe('setOrientation');
 
+    // Second call, outside the 500 ms window: tilt-only goToTiltPercentage.
+    // No lift queued, so just a single-command Action.
     await device.executeCommandHandler('WindowCovering.goToTiltPercentage', { tiltPercent100thsValue: 6000 }, 'windowCovering', (device.state as any).windowCovering, device);
     await wait(700);
     expect(clientExecuteSpy).toHaveBeenCalledTimes(2);
@@ -804,6 +813,170 @@ describe('TestPlatform', () => {
     expect(cover.moveInterval).toBeUndefined();
     expect(cover.movementStatus).toBe(WindowCovering.MovementStatus.Stopped);
     expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
+
+    await resetPlatform();
+  });
+
+  it('should restore previously stored tilt as a trailing command on a lift-only move', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    cover.currentTilt = 7000;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 4000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+
+    expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
+    const commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(2);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([40]);
+    expect(commands[1].name).toBe('setOrientation');
+    expect(commands[1].parameters).toEqual([70]);
+    // cover.currentTilt is preserved as the source for the restore command (cluster attribute is not touched on lift-only flushes).
+    expect(cover.currentTilt).toBe(7000);
+
+    await resetPlatform();
+  });
+
+  it('should NOT add tilt-restore when both lift and tilt are queued explicitly', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure', 'setOrientation'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    cover.currentTilt = 7000;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 3000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(50);
+    await device.executeCommandHandler('WindowCovering.goToTiltPercentage', { tiltPercent100thsValue: 8000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+
+    expect(clientExecuteSpy).toHaveBeenCalledTimes(1);
+    const commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(2);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([30]);
+    expect(commands[1].name).toBe('setOrientation');
+    expect(commands[1].parameters).toEqual([80]);
+
+    await resetPlatform();
+  });
+
+  it('should NOT add tilt-restore when cover lacks a tilt command', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 5000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+
+    const commands = commandsFromLastExecute();
+    expect(commands).toHaveLength(1);
+    expect(commands[0].name).toBe('setClosure');
+    expect(commands[0].parameters).toEqual([50]);
+
+    await resetPlatform();
+  });
+
+  it('should apply liftCalibration when computing setClosure parameter', async () => {
+    somfyPlatform.config.liftCalibration = { Device1: [20, 80] };
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    expect(cover.liftCalibration).toEqual([20, 80]);
+    const device = cover.bridgedDevice;
+
+    // 0% → top (20)
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 0 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    let commands = commandsFromLastExecute();
+    expect(commands[0].parameters).toEqual([20]);
+
+    // 25% → 20 + 0.25*60 = 35
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 2500 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    commands = commandsFromLastExecute();
+    expect(commands[0].parameters).toEqual([35]);
+
+    // 100% → bottom (80)
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 10000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    commands = commandsFromLastExecute();
+    expect(commands[0].parameters).toEqual([80]);
+
+    somfyPlatform.config.liftCalibration = {};
+    await resetPlatform();
+  });
+
+  it('should ignore invalid liftCalibration and log error, fall back to identity', async () => {
+    somfyPlatform.config.liftCalibration = { Device1: [85, 23] };
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.ERROR, expect.stringContaining('Invalid liftCalibration'));
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    expect(cover.liftCalibration).toBeUndefined();
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 5000 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    expect(commandsFromLastExecute()[0].parameters).toEqual([50]);
+
+    somfyPlatform.config.liftCalibration = {};
+    await resetPlatform();
+  });
+
+  it('should reject liftCalibration with wrong array length', async () => {
+    somfyPlatform.config.liftCalibration = { Device1: [50] as unknown as LiftCalibration };
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.ERROR, expect.stringContaining('expected [top, bottom]'));
+    const cover = somfyPlatform.covers.get('Device1');
+    expect(cover?.liftCalibration).toBeUndefined();
+
+    somfyPlatform.config.liftCalibration = {};
+    await resetPlatform();
+  });
+
+  it('should fall back to identity mapping when no liftCalibration entry exists', async () => {
+    setMockDevice({ label: 'Device1', uniqueName: 'xxx', uiClass: 'xxx', commands: ['open', 'close', 'stop', 'setClosure'] });
+    clientGetDevicesSpy.mockImplementationOnce(() => Promise.resolve(mockDevices));
+    await somfyPlatform.discoverDevices();
+
+    const cover = somfyPlatform.covers.get('Device1');
+    if (!cover) return;
+    expect(cover.liftCalibration).toBeUndefined();
+    const device = cover.bridgedDevice;
+
+    jest.clearAllMocks();
+    await device.executeCommandHandler('WindowCovering.goToLiftPercentage', { liftPercent100thsValue: 7500 }, 'windowCovering', (device.state as any).windowCovering, device);
+    await wait(700);
+    expect(commandsFromLastExecute()[0].parameters).toEqual([75]);
 
     await resetPlatform();
   });

@@ -251,3 +251,48 @@ on their own with no extra latency for everyday slider drags.
 
 No new credentials, services, or keys are required — tilt is purely a
 capability detection refinement.
+
+### Automatic tilt re-alignment after lift moves
+
+Mechanically, a Somfy venetian-blind motor forces the lamellas to an extreme
+angle whenever the lift moves (closed when raising, open when lowering). To
+keep the physical tilt in sync with the Matter state, the plugin appends a
+trailing `setOrientation(currentTilt)` command to every lift-only update.
+Both commands ride in the same Overkiz `Action`, so Tahoma executes them
+sequentially: the lift moves first, then the slats rotate back to the
+previously stored tilt.
+
+If the same update also carries an explicit tilt change (Apple Home scene,
+simultaneous slider drag), the user-supplied tilt value is used instead and
+no extra restore command is sent.
+
+## Lift calibration
+
+Different Somfy motors expose different mechanical end-stops on the Overkiz
+API. One blind's "fully open" may be the Overkiz integer `23` and its "fully
+closed" `85`; another `37` / `90`. Without calibration, the plugin maps
+Matter `0%` → Overkiz `0` and `100%` → Overkiz `100`, which can leave the
+blind short of its physical limit or attempt to drive past it.
+
+The `liftCalibration` map remaps Matter `0..100%` linearly onto
+`[top, bottom]` per device:
+
+```json
+{
+  "liftCalibration": {
+    "Küche": [23, 85],
+    "Wohnzimmer": [37, 90]
+  }
+}
+```
+
+- `top` (integer `0..100`) — Overkiz value sent for Matter `0%` (fully open).
+- `bottom` (integer `0..100`) — Overkiz value sent for Matter `100%` (fully
+  closed). Must be strictly greater than `top`.
+
+Devices without a calibration entry keep the identity mapping
+(`0% → 0`, `100% → 100`).
+
+Invalid entries (wrong array length, non-integer values, `top >= bottom`)
+are logged as an error at startup and ignored — the affected device falls
+back to identity mapping.

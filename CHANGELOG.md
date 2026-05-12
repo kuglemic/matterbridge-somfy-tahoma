@@ -28,6 +28,15 @@ If you like this project and find it useful, please consider giving it a star on
 
 # Changelog
 
+## [1.5.1] - 2026-05-12
+
+### Added
+
+- [tilt]: Auto-restore previously stored tilt as a trailing `setOrientation` command whenever lift moves alone on a tilt-capable cover. Tahoma executes the bundled `[setClosure, setOrientation]` sequentially in one action, so the lamellas snap back to their saved angle right after the lift settles. Eliminates the mechanical tilt drift that Somfy motors otherwise impose on every lift hub.
+- [calibration]: New optional config `liftCalibration: Record<string, [top, bottom]>` for per-device mechanical end-stop calibration. Matter `0..100%` is linearly mapped onto the configured Overkiz `[top, bottom]` integer range (e.g. `{ "Küche": [23, 85] }`). Devices without a calibration entry keep the identity mapping unchanged. Invalid entries are logged as an error and ignored.
+
+<a href="https://www.buymeacoffee.com/luligugithub"><img src="https://matterbridge.io/assets/bmc-button.svg" alt="Buy me a coffee" width="80"></a>
+
 ## [1.5.0] - 2026-05-12
 
 ### Added

@@ -8,6 +8,7 @@
   "blackList": [],
   "whiteList": [],
   "movementDuration": {},
+  "liftCalibration": {},
   "exposeMyPositionSwitch": true,
   "myPositionSuffix": "My",
   "myPositionAlias": "favorite1",
